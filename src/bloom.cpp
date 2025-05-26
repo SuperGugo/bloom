@@ -1487,6 +1487,7 @@ class Parser {
 
             ts.assert(LAMBDA_PUNCTUATION);
             
+            // TODO: do better bodies, where () means it takes in an expression ((x) acts as shorthand for {return x}) and {} a statement
             ts.assert("{");
             ret->body = parseExpression();
             ts.assert("}");
@@ -2074,3 +2075,4 @@ int main(int argc, char** argv) {
 }
 
 // Honestly, symbols can be seen as members of namespaces. Maybe there is no need for separating them and it can just be identified at semantic analysis time.
+// TODO: references. As in, i64& (under the hood uses pointers). Very useful for function returns but remember, there is no use (here) for passing objects as references, as objects would be passed as (non constant) pointers anyway. It can be useful for primitives, though, I think.
