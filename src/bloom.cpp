@@ -80,7 +80,6 @@
 #define MEMBERSHIP_PUNCTUATION "."
 #define INHERITANCE_PUNCTUATION ":"
 #define DATATYPE_PUNCTUATION ":"
-#define FUNCTION_VARIABLE_PUNCTUATION "<"
 #define LAMBDA_PUNCTUATION "." // This is lambda calculus syntax, perhaps -> or => (tbi) is more readable?
 #define CAST_OPERATOR "->"
 
@@ -160,16 +159,18 @@ struct DataType {
         u8, u16, u32, u64,
         i8, i16, i32, i64,
         f16, f32, f64,
-        fun, ptr,
+        fun, ptr, ref,
         customtype, enumerator, generic,
         unresolved
     } type = i32;
     std::shared_ptr<DataType> pointerType;
+    std::shared_ptr<DataType> referenceType;
 
     std::vector<DataType> functionParameters;
     std::shared_ptr<DataType> functionReturn;
 
     std::string customTypeName;
+    std::vector<std::string> customTypeGenerics;
 
     std::string enumName;
 
@@ -195,6 +196,7 @@ struct DataType {
             case f32: out = "f32"; break;
             case f64: out = "f64"; break;
             case ptr: out = "ptr"; break;
+            case ref: out = "ref"; break;
             case fun: out = "fun"; break;
             case generic: out = "gen"; break;
             case customtype: out = "custom"; break;
@@ -202,6 +204,8 @@ struct DataType {
         }
         if (type == ptr) {
             out += POINTER_MODIFIER + pointerType->format();
+        } else if (type == ref) {
+            out += "&" + referenceType->format();
         } else if (type == fun) {
             out += DATATYPE_PUNCTUATION + functionReturn->format() + "<";
             for (auto par : functionParameters) {
@@ -211,7 +215,11 @@ struct DataType {
         } else if (type == generic) {
             out += ":" + genericName;
         } else if (type == customtype) {
-            out += ":" + nmspc + "." + customTypeName;
+            out += ":" + nmspc + "." + customTypeName + "<";
+            for (auto x : customTypeGenerics) {
+                out += x + ", ";
+            }
+            out += "\b\b>";
         } else if (type == enumerator) {
             out += ":" + nmspc + "." + enumName;
         } else if (type == unresolved) {
@@ -517,8 +525,10 @@ struct Statement {
 struct CustomTypeDefinition {
     std::string identifier;
     DataType parent;
+    std::vector<std::string> generics;
     std::vector<std::pair<std::string, DataType>> attributes;
     bool alias;
+    bool inherited;
 
     CustomTypeDefinition() {};
 };
@@ -530,6 +540,7 @@ struct FunctionDefinition {
     DataType returnType;
     std::vector<std::pair<std::string, DataType>> parameters;
     Statement body;
+    bool virt;
 
     FunctionDefinition() {};
 };
@@ -537,6 +548,9 @@ struct FunctionDefinition {
 struct VariableDefinition {
     std::string identifier;
     DataType type;
+    Expression initValue;
+    bool hasInitValue;
+    bool constant;
 
     VariableDefinition() {};
 };
@@ -609,6 +623,56 @@ struct AssemblyStatement {
     std::string body;
 
     AssemblyStatement() {};
+};
+
+// Symbol table
+
+struct CustomType {
+    std::string identifier;
+    DataType parent;
+    std::vector<std::string> generics;
+    std::vector<std::pair<std::string, DataType>> attributes;
+    bool inherited;
+
+    CustomType() {};
+};
+
+struct Function {
+    std::string identifier;
+    std::string membership;
+    std::vector<std::string> generics;
+    DataType returnType;
+    std::vector<std::pair<std::string, DataType>> parameters;
+    Statement body;
+
+    Function() {};
+};
+
+struct Variable {
+    std::string identifier;
+    DataType type;
+    bool constant;
+
+    std::vector<unsigned int> scope;
+
+    Variable() {};
+};
+
+struct Enum {
+    std::string identifier;
+    std::unordered_map<std::string, int64_t> values;
+
+    Enum() {};
+};
+
+struct SymbolTable{
+    // Note: right now, all global variables, even initialized ones, go in the uninitialized data section. This is due to me not differentiating literals from other expressions in variable init.
+    std::vector<CustomType>     types;
+    std::vector<Enum>           enums;
+    std::unordered_map<std::string, DataType>   typedefs;
+    std::vector<Function>       functions;  // .text section
+    std::vector<Variable>       variables;  // .bss section
+    std::vector<Statement>      start;      // to revise, possibly the entry point of the .text section
 };
 
 typedef std::vector<Statement> Ast;
@@ -768,6 +832,11 @@ void printStatement(Statement stmt, int indent) {
             if (stmt.customTypeDefinition->alias) {
                 std::cout<<std::string(indent+4, ' ')<<"Alias for: "<<stmt.customTypeDefinition->parent.format()<<std::endl;
             } else {
+                std::cout<<std::string(indent+4, ' ')<<"Generics: ";
+                for (auto x : stmt.customTypeDefinition->generics) {
+                    std::cout<<x<<" ";
+                }
+                std::cout<<std::endl;
                 std::cout<<std::string(indent+4, ' ')<<"Parent: "<<stmt.customTypeDefinition->parent.format()<<std::endl;
                 std::cout<<std::string(indent+4, ' ')<<"Attributes: "<<std::endl;
                 for (auto x : stmt.customTypeDefinition->attributes) {
@@ -778,11 +847,12 @@ void printStatement(Statement stmt, int indent) {
         }
         case Statement::FunctionDefinitionT: {
             std::cout<<std::string(indent, ' ')<<"Function definition: "<<stmt.functionDefinition->identifier<<std::endl;
+            std::cout<<std::string(indent+4, ' ')<<"Virtual: "<<stmt.functionDefinition->virt<<std::endl;
             std::cout<<std::string(indent+4, ' ')<<"Member of: "<<stmt.functionDefinition->membership<<std::endl;
             std::cout<<std::string(indent+4, ' ')<<"Return type: "<<stmt.functionDefinition->returnType.format()<<std::endl;
             std::cout<<std::string(indent+4, ' ')<<"Generics: ";
             for (auto x : stmt.functionDefinition->generics) {
-                std::cout<<std::string(indent+8, ' ')<<x<<" ";
+                std::cout<<x<<" ";
             }
             std::cout<<std::endl;
             std::cout<<std::string(indent+4, ' ')<<"Parameters: "<<std::endl;
@@ -795,7 +865,12 @@ void printStatement(Statement stmt, int indent) {
         }
         case Statement::VariableDefinitionT: {
             std::cout<<std::string(indent, ' ')<<"Variable definition: "<<stmt.variableDefinition->identifier<<std::endl;
+            std::cout<<std::string(indent+4, ' ')<<"Constant: "<<stmt.variableDefinition->constant<<std::endl;
             std::cout<<std::string(indent+4, ' ')<<"Type: "<<stmt.variableDefinition->type.format()<<std::endl;
+            if (stmt.variableDefinition->hasInitValue) {
+                std::cout<<std::string(indent+4, ' ')<<"Init value: "<<std::endl;
+                printExpression(stmt.variableDefinition->initValue, indent+8);
+            }
             break;
         }
         case Statement::EnumDefinitionT: {
@@ -965,7 +1040,7 @@ void error(ErrorType err, Token token) {
     exit(1);
 }
 
-// TokenStream
+// TokenStream: allows for on-demand lexing, eventually, for larger files.
 
 class TokenStream {
     public:
@@ -992,11 +1067,110 @@ class BufferedTokenStream : public TokenStream {
         BufferedTokenStream(const std::vector<Token> tokens) : tokens(tokens) {};
 };
 
+// Semantic analyzer
+
+class Analyzer {
+    public:
+        Analyzer(const Ast& ast) : ast(ast), scope(0), scopeTree({0}) {}
+        SymbolTable analyze() {
+            for (Statement stat : ast) {
+                analyzeObject(stat);
+            }
+            return sym;
+        }
+    private:
+        const Ast ast;
+        uint64_t scope;
+        std::vector<unsigned int> scopeTree;
+        SymbolTable sym;
+
+        // Parses an object
+        void analyzeObject(Statement stat) {
+            switch (stat.type) {
+                case Statement::VariableDefinitionT:
+                {
+                    Variable ret = Variable();
+
+                    ret.constant = stat.variableDefinition->constant;
+                    ret.identifier = stat.variableDefinition->identifier; // TODO: Obviously check if it already exists or no
+                    ret.type = stat.variableDefinition->type;
+                    ret.scope = scopeTree;
+                    
+                    if (stat.variableDefinition->hasInitValue) {
+                        std::shared_ptr<AssignmentExpression> ass = std::make_shared<AssignmentExpression>();
+                        std::shared_ptr<IdentifierExpression> id = std::make_shared<IdentifierExpression>();
+                        id->nmspc = "*";
+                        id->identifier = ret.identifier;
+                        ass->lhs = id;
+                        ass->rhs = stat.variableDefinition->initValue;
+
+                        sym.start.push_back(analyzeStatement(std::make_shared<Expression>(ass)));
+                    }
+
+                    sym.variables.push_back(ret);
+                    break;
+                }
+                case Statement::FunctionDefinitionT:
+                {
+                    Function ret = Function();
+
+                    ret.identifier = stat.functionDefinition->identifier; // TODO: Obviously check if it already exists or no
+                    ret.membership = stat.functionDefinition->membership; // TODO: name mangling!
+                    ret.generics = stat.functionDefinition->generics;
+                    ret.parameters = stat.functionDefinition->parameters;
+                    ret.returnType = stat.functionDefinition->returnType;
+                    // TODO: scopes, parameters as variables, inheriting generics, membership check, solve types, everything. this is just the skeleton for functions.
+                    ret.body = analyzeStatement(stat.functionDefinition->body);
+
+                    sym.functions.push_back(ret);
+                    break;
+                }
+                case Statement::CustomTypeDefinitionT:
+                {
+                    if (stat.customTypeDefinition->alias) {
+                        sym.typedefs[stat.customTypeDefinition->identifier] = stat.customTypeDefinition->parent;
+                    } else {
+                        CustomType ret = CustomType();
+
+                        ret.identifier = stat.customTypeDefinition->identifier; // TODO: Obviously check if it already exists or no
+                        ret.generics = stat.customTypeDefinition->generics;
+
+                        ret.attributes = stat.customTypeDefinition->attributes; // TODO: type solving once again, inheritance
+
+                        ret.parent = stat.customTypeDefinition->parent; // I doubt parent should even stay
+                        ret.inherited = stat.customTypeDefinition->inherited;
+
+                        sym.types.push_back(ret);
+                        break;
+                    }
+                }
+                case Statement::EnumDefinitionT:
+                {
+                    Enum ret = Enum();
+
+                    ret.identifier = stat.enumDefinition->identifier; // TODO: Obviously check if it already exists or no
+                    ret.values = stat.enumDefinition->values;
+
+                    sym.enums.push_back(ret);
+                    break;
+                }
+                default:
+                    std::cerr<<"How did we get here?"<<std::endl; exit(1);
+            }
+        }
+
+        // Analyzes a statement
+        Statement analyzeStatement(Statement stat) {
+            printStatement(stat, 0);
+            return stat;
+        }
+};
+
 // Parser
 
 class Parser {
     public:
-        Parser(const TokenStream& ts) : ts(ts), scope(0), scopeTree({0}) {}
+        Parser(const TokenStream& ts) : ts(ts) {}
         Ast parse() {
             Ast ast;
 
@@ -1008,8 +1182,6 @@ class Parser {
         }
     private:
         const TokenStream& ts;
-        uint64_t scope;
-        std::vector<unsigned int> scopeTree;
 
         // Parses the namespace
         std::pair<std::string, std::string> parseNamespace() {
@@ -1050,7 +1222,7 @@ class Parser {
             }
             
             // Handle modifiers
-            while (ts.peek().value == POINTER_MODIFIER || ts.peek().value == "<" || ts.peek().value == "[") {
+            while (ts.peek().value == POINTER_MODIFIER || ts.peek().value == "#" || ts.peek().value == "[" || ts.peek().value == "&") {
                 std::shared_ptr<DataType> subtype = std::make_shared<DataType>(ret);
                 if (ts.peek().value == POINTER_MODIFIER) {
                     ret = DataType(DataType::ptr);
@@ -1061,17 +1233,23 @@ class Parser {
                     ret.pointerType = subtype;
                     ts.next(); // Skip "["
                     ts.assert("]");
-                } else if (ts.peek().value == FUNCTION_VARIABLE_PUNCTUATION) {
+                } else if (ts.peek().value == "#") {
                     ret = DataType(DataType::fun);
                     ret.functionReturn = subtype;
-                    ts.next(); // Skip "<"
-                    while (!ts.eof() && ts.peek().value != ">") {
+                    ts.next(); // Skip "#"
+                    ts.assert("(");
+                    while (!ts.eof() && ts.peek().value != ")") {
                         ret.functionParameters.push_back(parseDataType());
                         if (ts.peek().value == ",") ts.next(); // Skip ","
-                        else if (ts.peek().value != ">") error(UnexpectedToken, ts.peek());
+                        else if (ts.peek().value != ")") error(UnexpectedToken, ts.peek());
                     }
-                    ts.next(); // Skip ">"
-                } 
+                    ts.next(); // Skip ")"
+                } else if (ts.peek().value == "&") {
+                    ret = DataType(DataType::ref);
+                    ret.referenceType = subtype;
+                    ts.next();
+                    break;
+                }
             }
 
             return ret;
@@ -1093,7 +1271,7 @@ class Parser {
         // Parses a variable definition
         Statement defineVariable() {
             std::shared_ptr<VariableDefinition> ret = std::make_shared<VariableDefinition>();
-            bool constant = ts.next().value == "const";
+            ret->constant = ts.next().value == "const";
             ret->identifier = ts.next().value;
             
             if (ts.peek().value == DATATYPE_PUNCTUATION) {
@@ -1105,21 +1283,12 @@ class Parser {
             }
 
             if (ts.peek().value == "=") {
-                std::shared_ptr<AssignmentExpression> ass = std::make_shared<AssignmentExpression>();
                 ts.next();
-                std::shared_ptr<IdentifierExpression> id = std::make_shared<IdentifierExpression>();
-                id->identifier = ret->identifier;
-                ass->lhs = id;
-                ass->rhs = parseExpression();
-
-                std::shared_ptr<BlockStatement> block = std::make_shared<BlockStatement>();
-                block->statements.push_back(ret);
-                block->statements.push_back(std::make_shared<Expression>(ass));
-                ts.assert(";");
-                return block;
+                ret->initValue = parseExpression();
+                ret->hasInitValue = true;
+            } else {
+                ret->hasInitValue = false;
             }
-
-            // TODO: Scopes
 
             ts.assert(";");
             
@@ -1129,16 +1298,24 @@ class Parser {
         // Parses a function definition
         Statement defineFunction() {
             std::shared_ptr<FunctionDefinition> ret = std::make_shared<FunctionDefinition>();
-            bool virt = ts.next().value == "virt"; // TODO: do something with this information
+            ret->virt = ts.next().value == "virt";
             ret->identifier = ts.next().value;
 
-            // Check if function is a member (?) or if it has generics
+            // Check if function is a member (?) AND if it has generics (they shouldn't be mutually exclusive)
             if (ts.peek().value == MEMBERSHIP_PUNCTUATION) {
                 ts.next(); // Skip membership punctuation
                 ret->membership = ret->identifier;
                 ret->identifier = ts.next().value;
-            } else if (ts.peek().value == "<") {
-                ts.next();
+            }
+
+            if (ts.peek().value == "<") {
+                ts.next(); // Skip "<"
+                while (!ts.eof() && ts.peek().value != ">") {
+                    ret->generics.push_back(ts.next().value);
+                    if (ts.peek().value == ",") ts.next(); // Skip ","
+                    else if (ts.peek().value != ">") error(UnexpectedToken, ts.peek());
+                }
+                ts.next(); // Skip ">"
             }
 
             // Parse return type of function (void if omitted)
@@ -1170,16 +1347,32 @@ class Parser {
             ts.next(); // Skip "type"
             ret->identifier = ts.next().value;
 
+            if (ts.peek().value == "<") {
+                ts.next(); // Skip "<"
+                while (!ts.eof() && ts.peek().value != ">") {
+                    ret->generics.push_back(ts.next().value);
+                    if (ts.peek().value == ",") ts.next(); // Skip ","
+                    else if (ts.peek().value != ">") error(UnexpectedToken, ts.peek());
+                }
+                ts.next(); // Skip ">"
+            }
+
             if (ts.peek().value == INHERITANCE_PUNCTUATION) {
                 ts.next(); // Skip inheritance punctuation
                 ret->parent = parseDataType();
+                ret->inherited = true;
+            } else {
+                ret->inherited = false;
             }
-
-            // TODO: .TypeHash, .ParentHash, .TypeName?, .VTable
 
             if (ts.peek().value == "(") {
                 ts.next();
                 while (!ts.eof() && ts.peek().value != ")") {
+                    if (ts.peek().value == "private") {
+                        ts.next(); // TODO: implement
+                    } else if (ts.peek().value == "readonly") {
+                        ts.next(); // TODO: implement
+                    }
                     std::string identifier = ts.next().value;
                     ts.assert(DATATYPE_PUNCTUATION);
                     ret->attributes.push_back({identifier, parseDataType()});
@@ -1352,16 +1545,19 @@ class Parser {
         // Parses a return statement
         Statement parseReturnStatement() {
             std::shared_ptr<ReturnStatement> ret = std::make_shared<ReturnStatement>();
+            ts.next(); // Skip "return"
 
             ret->toReturn = parseExpression();
             
             ts.assert(";");
+            
             return ret;
         }
 
         // Parses a destroy statement
         Statement parseDestroyStatement() {
             std::shared_ptr<DestroyStatement> ret = std::make_shared<DestroyStatement>();
+            ts.next(); // Skip "destroy"
 
             ret->toDestroy = parseExpression();
 
@@ -1545,6 +1741,7 @@ class Parser {
         // Parses an operation
         bool parseOperation() {
             std::string op = ts.peek().value;
+
             if (op == "!") {
                 ts.next();
                 UnaryOperation(Op::LNOT);
@@ -1553,7 +1750,7 @@ class Parser {
                 ts.next();
                 UnaryOperation(Op::NOT);
                 return false;
-            } else if (op == "-") {
+            } else if (op == "-" && expStack.size() == 0) {
                 ts.next();
                 UnaryOperation(Op::NEG);
                 return false;
@@ -1741,7 +1938,6 @@ class Parser {
             expStack.push_back(std::make_shared<Expression>(ret));
         }
 };
-
 
 // Lexer
 
@@ -2039,6 +2235,8 @@ class Lexer {
         }
 };
 
+// Entry point
+
 int main(int argc, char** argv) {
     if (argc < 2) error(NoInputFiles, {EoF, "", 0, 0});
     filename = argv[1];
@@ -2055,24 +2253,85 @@ int main(int argc, char** argv) {
     Lexer lexer(sourceCode);
     BufferedTokenStream tokenStream = lexer.tokenize();
 
-    std::cout << PINK ITALIC BOLD << "bloom" <<RESET<<" | " << RESET << BOLD GRAY << "phase 1: " << RESET << "lexing done" << std::endl;
-
-    std::cout<<std::endl;
+    std::cout << PINK ITALIC BOLD << "bloom" <<RESET<<" | " << RESET << BOLD GRAY << "phase 1: " << RESET << "lexing done\n\n";
     
     Parser parser(tokenStream);
     Ast ast = parser.parse();
 
-    std::cout << PINK ITALIC BOLD << "bloom" <<RESET<<" | " << RESET << BOLD GRAY << "phase 2: " << RESET << "parsing done" << std::endl;
-    
-    for (auto x : ast) {
-        printStatement(x, 0);
-        std::cout<<"________"<<std::endl;
-    }
+    std::cout << PINK ITALIC BOLD << "bloom" <<RESET<<" | " << RESET << BOLD GRAY << "phase 2: " << RESET << "parsing done\n\n";
 
-    //std::cout<<std::endl;
+    Analyzer analyzer(ast);
+    SymbolTable sym = analyzer.analyze();
+
+    std::cout << PINK ITALIC BOLD << "bloom" <<RESET<<" | " << RESET << BOLD GRAY << "phase 3: " << RESET << "analysis done\n\n";
+
+    for (auto o : sym.functions) {
+            std::cout << "Function: " << o.identifier << std::endl;
+            std::cout << "    Return type: " << o.returnType.type << std::endl;
+            std::cout << "    Parameters: " << std::endl;
+            for (auto p : o.parameters) {
+                std::cout << "        Variable: \"" << p.first << "\" of type " << p.second.format() << std::endl;
+            }
+            std::cout << "    Generics: " << std::endl;
+            for (auto p : o.generics) {
+                std::cout << "        Generic: " << p << std::endl;
+            }
+            std::cout << "    Body:" << std::endl;
+            printStatement(o.body, 8);
+            std::cout<<"------------"<<std::endl;
+        }
+
+        for (auto o : sym.variables) {
+            if (o.scope.size() > 1) continue;
+            std::cout << (o.constant ? "Constant: " : "Variable: ") << o.identifier << std::endl;
+            std::cout << "    Data type: " << o.type.format() << std::endl;
+            std::cout << "    Scope: ";
+            for (auto p : o.scope) {
+                std::cout << p << " -> ";
+            }
+            std::cout << "\b\b\b   \n";
+            std::cout<<"------------"<<std::endl;
+        }
+
+        // List all types
+        for (auto o : sym.types) {
+            std::cout << "Type: " << o.identifier << (o.parent.customTypeName == "" ? "" : ":" + o.parent.customTypeName) << std::endl;
+            std::cout << "    Attributes: " << std::endl;
+            for (auto p : o.attributes) {
+                std::cout << "        Variable: \"" << p.first << "\" of type " << p.second.format() << std::endl;
+            }
+            std::cout << "    Generics: " << std::endl;
+            for (auto p : o.generics) {
+                std::cout << "        Generic: " << p << std::endl;
+            }
+            std::cout<<"------------"<<std::endl;
+        }
+
+        // List all typedefs
+        for (auto o : sym.typedefs) {
+            std::cout << "Typedef: " << o.first << "->" << o.second.format() << std::endl;
+        }
+        std::cout<<"------------"<<std::endl;
+
+        // List all enumerators
+        for (auto o : sym.enums) {
+            std::cout << "Enum: " << o.identifier << std::endl;
+            std::cout << "    Values: " << std::endl;
+            for (auto p : o.values) {
+                std::cout << "        Value: \"" << p.first << "\" of value " << std::to_string(p.second) << std::endl;
+            }
+            std::cout<<"------------"<<std::endl;
+        }
+
+        // Entry point
+        std::cout << "Entry point: " << std::endl;
+        for (auto o : sym.start) {
+            printStatement(o, 4);
+        }
 
     f.close();
 }
 
 // Honestly, symbols can be seen as members of namespaces. Maybe there is no need for separating them and it can just be identified at semantic analysis time.
 // TODO: references. As in, i64& (under the hood uses pointers). Very useful for function returns but remember, there is no use (here) for passing objects as references, as objects would be passed as (non constant) pointers anyway. It can be useful for primitives, though, I think.
+// References are a data type, but they also indicate the expression type. A variable of type reference is an lvalue, and a variable of type NOT reference is always a constant (rvalue) and cannot be changed. 

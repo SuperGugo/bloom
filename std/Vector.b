@@ -75,7 +75,7 @@ fun Vector.[]op : T& ( index : i64 )
 }
 
 // Returns a reference to the last item
-fun Vector.Back : v? ()
+fun Vector.Back : T& ()
 {
     return this.data[this.size-1];
 }
@@ -106,52 +106,52 @@ fun Vector.Find : i64 ( x : T )
 /*  Function-based methods, these are really cool   */
 
 // Looks for the first item that matches the condition
-fun Vector.First : i64 ( fun : u8(T) )
+fun Vector.First : i64 ( func : u8#(T) )
 {
     for ( var i : i64 = 0; i < this.size; i++ )
     {
-        if ( fun(this.data[i]) ) return i;
+        if ( func(this.data[i]) ) return i;
     }
     return -1;
 }
 
 // Runs the function on every item in the array.
-fun Vector.ForEach : v ( fun : v(T&) )
+fun Vector.ForEach : v ( func : v#(T&) )
 {
     for ( var i : i64 = 0; i < this.size; i++ )
     {
-        fun(this.data[i]);
+        func(this.data[i]);
     }
 }
 
 // Returns if any items in the vector match the condition
-fun Vector.Any : u8 ( fun : u8(T) )
+fun Vector.Any : u8 ( func : u8#(T) )
 {
     for ( var i : i64 = 0; i < this.size; i++ )
     {
-        if ( fun(this.data[i]) ) return 1;
+        if ( func(this.data[i]) ) return 1;
     }
     return 0;
 }
 
 
 // Returns if all items in the vector match the condition
-fun Vector.All : u8 ( fun : u8(T) )
+fun Vector.All : u8 ( func : u8#(T) )
 {
     for ( var i : i64 = 0; i < this.size; i++ )
     {
-        if ( !fun(this.data[i]) ) return 0;
+        if ( !func(this.data[i]) ) return 0;
     }
     return 1;
 }
 
 // Returns how many items in the vector match the condition
-fun Vector.Count : u64 ( fun : u8(T) )
+fun Vector.Count : u64 ( func : u8#(T) )
 {
     var count : u64 = 0;
     for ( var i : i64 = 0; i < this.size; i++ )
     {
-        if ( fun(this.data[i]) ) count++;
+        if ( func(this.data[i]) ) count++;
     }
     return count;
 }

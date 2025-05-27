@@ -32,3 +32,4 @@
 *.app
 
 std/todo
+src/t*
