@@ -955,6 +955,72 @@ void printStatement(Statement stmt, int indent) {
     }
 }
 
+void printSymbolTable(SymbolTable sym) {
+    for (auto o : sym.functions) {
+            std::cout << "Function: " << o.identifier << std::endl;
+            std::cout << "    Return type: " << o.returnType.type << std::endl;
+            std::cout << "    Parameters: " << std::endl;
+            for (auto p : o.parameters) {
+                std::cout << "        Variable: \"" << p.first << "\" of type " << p.second.format() << std::endl;
+            }
+            std::cout << "    Generics: " << std::endl;
+            for (auto p : o.generics) {
+                std::cout << "        Generic: " << p << std::endl;
+            }
+            std::cout << "    Body:" << std::endl;
+            printStatement(o.body, 8);
+        }
+        std::cout<<"------------"<<std::endl;
+
+        for (auto o : sym.variables) {
+            //if (o.scope.size() > 1) continue;
+            std::cout << (o.constant ? "Constant: " : "Variable: ") << o.identifier << std::endl;
+            std::cout << "    Data type: " << o.type.format() << std::endl;
+            std::cout << "    Scope: ";
+            for (auto p : o.scope) {
+                std::cout << p << " -> ";
+            }
+            std::cout << "\b\b\b   \n";
+        }
+        std::cout<<"------------"<<std::endl;
+
+        // List all types
+        for (auto o : sym.types) {
+            std::cout << "Type: " << o.identifier << (o.parent.customTypeName == "" ? "" : ":" + o.parent.customTypeName) << std::endl;
+            std::cout << "    Attributes: " << std::endl;
+            for (auto p : o.attributes) {
+                std::cout << "        Variable: \"" << p.first << "\" of type " << p.second.format() << std::endl;
+            }
+            std::cout << "    Generics: " << std::endl;
+            for (auto p : o.generics) {
+                std::cout << "        Generic: " << p << std::endl;
+            }
+        }
+        std::cout<<"------------"<<std::endl;
+
+        // List all typedefs
+        for (auto o : sym.typedefs) {
+            std::cout << "Typedef: " << o.first << "->" << o.second.format() << std::endl;
+        }
+        std::cout<<"------------"<<std::endl;
+
+        // List all enumerators
+        for (auto o : sym.enums) {
+            std::cout << "Enum: " << o.identifier << std::endl;
+            std::cout << "    Values: " << std::endl;
+            for (auto p : o.values) {
+                std::cout << "        Value: \"" << p.first << "\" of value " << std::to_string(p.second) << std::endl;
+            }
+        }
+        std::cout<<"------------"<<std::endl;
+
+        // Entry point
+        std::cout << "Entry point: " << std::endl;
+        for (auto o : sym.start) {
+            printStatement(o, 4);
+        }
+}
+
 // Tiny half precision float library
 
 static uint16_t floatToHalf(float f) {
@@ -1004,7 +1070,11 @@ enum ErrorType {
 
     UnmatchedPunctuation,
     UnexpectedEOF,
-    UnexpectedToken
+    UnexpectedToken,
+
+    SymbolAlreadyExists,
+    SymbolDoesNotExist,
+    UndefinedType,
 };
 
 void error(ErrorType err, Token token) {
@@ -1029,6 +1099,15 @@ void error(ErrorType err, Token token) {
             break;
         case UnexpectedToken:
             std::cerr << "unexpected token: " << token.value << std::endl;
+            break;
+        case SymbolAlreadyExists:
+            std::cerr << "symbol already defined: " << token.value << std::endl;
+            break;
+        case SymbolDoesNotExist:
+            std::cerr << "symbol not found in current scope: " << token.value << std::endl;
+            break;
+        case UndefinedType:
+            std::cerr << "type not defined in current scope: " << token.value << std::endl;
             break;
     }
     std::istringstream stream(sourceCode);
@@ -1082,6 +1161,7 @@ class Analyzer {
         const Ast ast;
         uint64_t scope;
         std::vector<unsigned int> scopeTree;
+        std::vector<std::string> scopeGenerics;
         SymbolTable sym;
 
         // Parses an object
@@ -1089,11 +1169,14 @@ class Analyzer {
             switch (stat.type) {
                 case Statement::VariableDefinitionT:
                 {
-                    Variable ret = Variable();
+                    if (identifierExists(stat.variableDefinition->identifier)) error(SymbolAlreadyExists, {Identifier, stat.variableDefinition->identifier, 0, 0}); // TODO: I absolutely need to find a way to do this!!!
 
+
+                    Variable ret = Variable();
+                    
                     ret.constant = stat.variableDefinition->constant;
-                    ret.identifier = stat.variableDefinition->identifier; // TODO: Obviously check if it already exists or no
-                    ret.type = stat.variableDefinition->type;
+                    ret.identifier = stat.variableDefinition->identifier;
+                    ret.type = analyzeDataType(stat.variableDefinition->type);
                     ret.scope = scopeTree;
                     
                     if (stat.variableDefinition->hasInitValue) {
@@ -1113,26 +1196,47 @@ class Analyzer {
                 case Statement::FunctionDefinitionT:
                 {
                     Function ret = Function();
-
+                    
                     ret.identifier = stat.functionDefinition->identifier; // TODO: Obviously check if it already exists or no
                     ret.membership = stat.functionDefinition->membership; // TODO: name mangling!
                     ret.generics = stat.functionDefinition->generics;
-                    ret.parameters = stat.functionDefinition->parameters;
+                    scopeGenerics = ret.generics;
+                    scope++;
+                    scopeTree.push_back(scope);
+
+                    for (auto x : stat.functionDefinition->parameters) {
+                        DataType dt = analyzeDataType(x.second);
+                        Variable var = Variable();
+                    
+                        var.constant = false;
+                        var.identifier = x.first;
+                        var.type = dt;
+                        var.scope = scopeTree;
+
+                        sym.variables.push_back(var);
+                        ret.parameters.push_back({x.first, dt});
+                    }
+
                     ret.returnType = stat.functionDefinition->returnType;
                     // TODO: scopes, parameters as variables, inheriting generics, membership check, solve types, everything. this is just the skeleton for functions.
                     ret.body = analyzeStatement(stat.functionDefinition->body);
+
+                    scopeTree.pop_back();
+                    scopeGenerics = {};
 
                     sym.functions.push_back(ret);
                     break;
                 }
                 case Statement::CustomTypeDefinitionT:
                 {
+                    if (identifierExists(stat.customTypeDefinition->identifier)) error(SymbolAlreadyExists, {Identifier, stat.customTypeDefinition->identifier, 0, 0}); // TODO: I absolutely need to find a way to do this!!!
+
                     if (stat.customTypeDefinition->alias) {
                         sym.typedefs[stat.customTypeDefinition->identifier] = stat.customTypeDefinition->parent;
                     } else {
                         CustomType ret = CustomType();
 
-                        ret.identifier = stat.customTypeDefinition->identifier; // TODO: Obviously check if it already exists or no
+                        ret.identifier = stat.customTypeDefinition->identifier;
                         ret.generics = stat.customTypeDefinition->generics;
 
                         ret.attributes = stat.customTypeDefinition->attributes; // TODO: type solving once again, inheritance
@@ -1141,14 +1245,16 @@ class Analyzer {
                         ret.inherited = stat.customTypeDefinition->inherited;
 
                         sym.types.push_back(ret);
-                        break;
                     }
+                    break;
                 }
                 case Statement::EnumDefinitionT:
                 {
+                    if (identifierExists(stat.enumDefinition->identifier)) error(SymbolAlreadyExists, {Identifier, stat.enumDefinition->identifier, 0, 0}); // TODO: I absolutely need to find a way to do this!!!
+                    
                     Enum ret = Enum();
 
-                    ret.identifier = stat.enumDefinition->identifier; // TODO: Obviously check if it already exists or no
+                    ret.identifier = stat.enumDefinition->identifier;
                     ret.values = stat.enumDefinition->values;
 
                     sym.enums.push_back(ret);
@@ -1157,6 +1263,64 @@ class Analyzer {
                 default:
                     std::cerr<<"How did we get here?"<<std::endl; exit(1);
             }
+        }
+
+        // Checks if an identifier exists (note: for functions, this is pre-mangling.)
+        bool identifierExists(std::string id) {
+           for (auto x : sym.types)     if (x.identifier == id) return true;
+           for (auto x : sym.enums)     if (x.identifier == id) return true;
+           for (auto x : sym.typedefs)  if (x.first == id)      return true;
+           for (auto x : sym.functions) if (x.identifier == id) return true;
+           for (auto x : sym.variables) if (x.identifier == id && isChild(scopeTree, x.scope)) return true;
+           return false;
+        }
+
+        // Checks if the scope B is a child of scope A.
+        bool isChild(std::vector<unsigned int> parent, std::vector<unsigned int> child) {
+            if (child.size() < parent.size()) return false;
+            for (int i = 0; i < parent.size(); i++) {
+                if (child[i] != parent[i]) return false;
+            }
+            return true;
+        }
+
+        // Analyzes a data type
+        DataType analyzeDataType(DataType unresolved) {
+            if (unresolved.type == DataType::unresolved) {
+                DataType ret = DataType();
+                for (auto gen : scopeGenerics) {
+                    if (gen == unresolved.unresolvedName) {
+                        ret.type = DataType::generic;
+                        ret.genericName = unresolved.unresolvedName;
+                        return ret;
+                    }
+                }
+                for (auto alias : sym.typedefs) {
+                    // TODO: namespaces!!!!!
+                    if (alias.first == unresolved.unresolvedName) {
+                        return alias.second;
+                    }
+                }
+                for (auto type : sym.types) {
+                    // TODO: namespaces!!!!!
+                    if (type.identifier == unresolved.unresolvedName) {
+                        ret.type = DataType::customtype;
+                        ret.customTypeName = unresolved.unresolvedName;
+                        // TODO: custom type generics, requires parsing update (parseIdentifier to allow <>s)
+                        return ret;
+                    }
+                }
+                for (auto en : sym.enums) {
+                    // TODO: namespaces!!!!!
+                    if (en.identifier == unresolved.unresolvedName) {
+                        ret.type = DataType::enumerator;
+                        ret.enumName = unresolved.unresolvedName;
+                        return ret;
+                    }
+                }
+                error(UndefinedType,  {Identifier, unresolved.unresolvedName, 0, 0});
+            }
+            return unresolved;
         }
 
         // Analyzes a statement
@@ -2265,69 +2429,7 @@ int main(int argc, char** argv) {
 
     std::cout << PINK ITALIC BOLD << "bloom" <<RESET<<" | " << RESET << BOLD GRAY << "phase 3: " << RESET << "analysis done\n\n";
 
-    for (auto o : sym.functions) {
-            std::cout << "Function: " << o.identifier << std::endl;
-            std::cout << "    Return type: " << o.returnType.type << std::endl;
-            std::cout << "    Parameters: " << std::endl;
-            for (auto p : o.parameters) {
-                std::cout << "        Variable: \"" << p.first << "\" of type " << p.second.format() << std::endl;
-            }
-            std::cout << "    Generics: " << std::endl;
-            for (auto p : o.generics) {
-                std::cout << "        Generic: " << p << std::endl;
-            }
-            std::cout << "    Body:" << std::endl;
-            printStatement(o.body, 8);
-            std::cout<<"------------"<<std::endl;
-        }
-
-        for (auto o : sym.variables) {
-            if (o.scope.size() > 1) continue;
-            std::cout << (o.constant ? "Constant: " : "Variable: ") << o.identifier << std::endl;
-            std::cout << "    Data type: " << o.type.format() << std::endl;
-            std::cout << "    Scope: ";
-            for (auto p : o.scope) {
-                std::cout << p << " -> ";
-            }
-            std::cout << "\b\b\b   \n";
-            std::cout<<"------------"<<std::endl;
-        }
-
-        // List all types
-        for (auto o : sym.types) {
-            std::cout << "Type: " << o.identifier << (o.parent.customTypeName == "" ? "" : ":" + o.parent.customTypeName) << std::endl;
-            std::cout << "    Attributes: " << std::endl;
-            for (auto p : o.attributes) {
-                std::cout << "        Variable: \"" << p.first << "\" of type " << p.second.format() << std::endl;
-            }
-            std::cout << "    Generics: " << std::endl;
-            for (auto p : o.generics) {
-                std::cout << "        Generic: " << p << std::endl;
-            }
-            std::cout<<"------------"<<std::endl;
-        }
-
-        // List all typedefs
-        for (auto o : sym.typedefs) {
-            std::cout << "Typedef: " << o.first << "->" << o.second.format() << std::endl;
-        }
-        std::cout<<"------------"<<std::endl;
-
-        // List all enumerators
-        for (auto o : sym.enums) {
-            std::cout << "Enum: " << o.identifier << std::endl;
-            std::cout << "    Values: " << std::endl;
-            for (auto p : o.values) {
-                std::cout << "        Value: \"" << p.first << "\" of value " << std::to_string(p.second) << std::endl;
-            }
-            std::cout<<"------------"<<std::endl;
-        }
-
-        // Entry point
-        std::cout << "Entry point: " << std::endl;
-        for (auto o : sym.start) {
-            printStatement(o, 4);
-        }
+    printSymbolTable(sym);
 
     f.close();
 }
